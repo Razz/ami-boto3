@@ -7,5 +7,5 @@ ENV AWS_SECRET_ACCESS_KEY=""
 
 RUN pip install boto3
 
-ADD ./main.py
-ENTRYPOINT ["aws"]
+ADD ./api.py .
+ENTRYPOINT ["api.py"]
