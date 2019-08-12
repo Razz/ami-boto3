@@ -1,8 +1,14 @@
+#!/bin/python3
+
 import boto3
 import time
 import argparse
 import sys
 from botocore.exceptions import ClientError
+
+def fatal(prints):
+    print(prints)
+    exit(1)
 
 #Input: InstanceID string
 #Output: AMI.Id string
@@ -26,7 +32,7 @@ def create_ami(instance_id, name):
         print(f'AMI from instance {instance_id} as {ami.id}')
         return ami.id
     except ClientError:
-        print(f"Error: Instance ({instance_id}) Not found")
+        fatal(f"Error: Instance ({instance_id}) Not found")
 
 
 #Input: Filter map[string]pyobject
@@ -36,13 +42,12 @@ def get_instance(filter):
     ec2 = boto3.client('ec2')
     instances = ec2.describe_instances(Filters=filter)['Reservations']
     if len(instances) > 1:
-        print(f'Too many instances found, need 1, got {len(instances)}') 
-        return 0
+        fatal(f'Too many instances found, need 1, got {len(instances)}')
     else:
         id = instances[0]['Instances'][0]['InstanceId']
         print(f'Found instance {id}')
         return id
-    
+
 
 #Input: map[string]string
 #Output: []map[string]pyobject{Name: tags:Key. Values: []string{Value}}...
@@ -64,18 +69,33 @@ def get_ami(filter):
         Filters=filter,
     )
     if len(amis['Images']) > 1:
-        print(f'Too many images found, need 1, got {len(amis)}') 
-        import code; code.interact(local=locals())
-        exit(1)
-        return 0
-    
+        fatal(f'Too many images found, need 1, got {len(amis)}')
+
     ami = amis['Images'][0]['ImageId']
     print(f'Found image {ami}')
     return ami
 
-    
-#XXX
+
+#Input: AMI, List of AWS Accounts
 def promote_ami(ami, accounts):
+    # image = boto3.resource('ec2').Image(ami)
+    ec2 = boto3.client('ec2')
+
+    add_groups = []
+    for account in accounts.split(','):
+        add_groups.append({'Group': 'all', 'UserId': f'{account.strip()}' })
+
+    try:
+        res = ec2.modify_image_attribute(
+            Attribute = 'launchPermission',
+            ImageId=ami,
+            OperationType='add',
+            UserGroups=['all'],
+            UserIds=accounts.split(','),
+        )
+    except ClientError as e:
+        fatal(f'[Promoting AMI] Error {e}')
+
     return 0
 
 #Input: AMI-ID and Optional Name
@@ -96,8 +116,7 @@ def copy_ami(ami, name):
         print(f'Copied {ami} => {id}')
         return 1
     except ClientError as e:
-        print(f'Error Copying ami: {e}')
-        return 0 
+        fatal(f'Error Copying ami: {e}')
 
 #Input: AMI-ID
 #Output: Pass/Fail
@@ -121,8 +140,7 @@ def create_wrapper(args):
     elif args.tags and args.name:
         return create_ami(get_instance(format_tags(args.tags)), args.name)
     else:
-        print(f'Need Tags or InstanceID and a Name to tag ami')
-        return 0
+        fatal(f'Need Tags or InstanceID and a Name to tag ami')
 
 
 def copy_wrapper(args):
@@ -131,25 +149,34 @@ def copy_wrapper(args):
     elif args.tags:
         copy_ami(get_ami(format_tags(args.tags)), args.name)
     else:
-        print(f'Need Tags or AMI-ID')
-        return 0
+        fatal(f'Need Tags or AMI-ID')
     if args.delete:
         delete_ami(args.ami)
- 
+
 def delete_wrapper(args):
     if args.ami:
         delete_ami(args.ami)
     elif args.tags:
         delete_ami(get_ami(format_tags(args.tags)))
     else:
-        print(f'Need Tags or AMI-ID')
-        return False
+        fatal(f'Need Tags or AMI-ID')
+
+def promote_wrapper(args):
+    if args.accounts is None:
+        fatal('Please Provide target account or accounts')
+    if args.ami:
+        promote_ami(args.ami, args.accounts)
+    elif args.tags:
+        promote_ami(get_ami(format_tags(args.tags)), args.accounts)
+    else:
+        fatal(f'Error, please see --help for usage')
+
     return True
 #--------------------#
 
 
 def main():
-    parser = argparse.ArgumentParser(prog='AMI')
+    parser = argparse.ArgumentParser(prog='ami')
     subparser = parser.add_subparsers()
 
     create = subparser.add_parser('create')
@@ -171,6 +198,13 @@ def main():
     copy.add_argument('--name')
     copy.add_argument('--delete', type=bool)
     copy.set_defaults(func=copy_wrapper)
+
+
+    promote = subparser.add_parser('promote', help="Promoting an AMI")
+    promote.add_argument('--ami', type=str)
+    promote.add_argument('-t', '--tags', type=str)
+    promote.add_argument('-a','--accounts', type=str)
+    promote.set_defaults(func=promote_wrapper)
 
     arg = parser.parse_args(sys.argv[1:])
     arg.func(arg)
